@@ -44,7 +44,6 @@ int grabFileType(char http_header[BUFSIZ], char file_type[FILETYPESIZE]) {
     if (dot_substr_pos == NULL) printf("HTTP Request is Malformed\n");//NOTE: PUT ERROR CODE
     strncpy(file_type, http_header +(int)(dot_substr_pos - http_header) +1, (int)(http_substr_pos - dot_substr_pos) -2);
     printf("file_type: %s\n", file_type);
-
     return 0;
 }
 
@@ -59,10 +58,43 @@ int grabHTTPVersion(char http_header[BUFSIZ], char http_version[HTTPVERSIONSIZE]
     strncpy(http_version, http_substr_pos, 8);
     printf("http_version: %s\n", http_version);
     return 0;
+}
+
+int determineResponseContentType(char file_type[FILETYPESIZE], char content_type[100]){
+    if (strcmp(file_type, "html") == 0) {
+        printf("Content type is html!.\n");
+    } else if (strcmp(file_type, "txt") == 0) {
+        printf("Content type is txt!.\n");
+    } else if (strcmp(file_type, "png") == 0) {
+        printf("Content type is png.\n");
+    }  else if (strcmp(file_type, "gif") == 0) {
+        printf("Content type is gif.\n");
+    }  else if (strcmp(file_type, "jpg") == 0) {
+        printf("Content type is jpg.\n");
+    }  else if (strcmp(file_type, "ico") == 0) {
+        printf("Content type is ico.\n");
+    }  else if (strcmp(file_type, "css") == 0) {
+        printf("Content type is css.\n");
+    } else if (strcmp(file_type, "js") == 0) {
+        printf("Content type is js.\n");
+    } else {
+        printf("Invalid selection.\n");
+    }
+
+    return 0;
 
 }
 
 int buildHTTPResponseHeader(char http_header[BUFSIZ], char http_version[HTTPVERSIONSIZE]) {
+    char file_type[FILETYPESIZE]; 
+    char content_type[100];
+    char version[100] = "HTTP/";
+    // char content_type[100] = "Content-Type: ";
+    char content_length[100] = "Content-Length: ";
+    
+    grabFileType(http_header, file_type);
+
+
 
     /*
     Should look like: 
@@ -106,6 +138,7 @@ int serveFile(){
    char filename[FILENAMESIZE];
    char file_type[FILETYPESIZE];
    char http_version[HTTPVERSIONSIZE];
+   char responseType[100];
    int position;
    int file_status;
    FILE *fp; 
@@ -146,8 +179,8 @@ int serveFile(){
     grabFileName(buf, filename);
     grabFileType(buf, file_type);
     grabHTTPVersion(buf, http_version);
+    determineResponseContentType(file_type, responseType);
 
-    
     bzero(buf, BUFSIZE);
     strcpy(buf, "Goodbye Client!\n");
     n = sendto(connfd, buf, BUFSIZE, 0, (struct sockaddr *) &clientaddr, clientlen);
