@@ -13,7 +13,8 @@
  #define FILETYPESIZE 5
  #define LISTENQ 10
  #define HTTP_REQUEST_FILENAME_START_POSTION 5
- #define WORKINGDIRECTORYSIZE 1000
+ #define WORKINGDIRECTORYPATHSIZE 1000
+ #define HTTPVERSIONSIZE 10
 
  
  /*
@@ -42,10 +43,50 @@ int grabFileType(char http_header[BUFSIZ], char file_type[FILETYPESIZE]) {
     if (http_substr_pos == NULL) printf("HTTP Request is Malformed\n");//NOTE: PUT ERROR CODE
     if (dot_substr_pos == NULL) printf("HTTP Request is Malformed\n");//NOTE: PUT ERROR CODE
     strncpy(file_type, http_header +(int)(dot_substr_pos - http_header) +1, (int)(http_substr_pos - dot_substr_pos) -2);
+    printf("file_type: %s\n", file_type);
+
     return 0;
 }
 
 int grabConnectionStatus() {
+    return 0;
+}
+
+int grabHTTPVersion(char http_header[BUFSIZ], char http_version[HTTPVERSIONSIZE]){
+    char *http_substr = "HTTP";
+    char *http_substr_pos = strstr(http_header, http_substr);
+    if (http_substr_pos == NULL) printf("HTTP Request is Malformed\n");//NOTE: PUT ERROR CODE
+    strncpy(http_version, http_substr_pos, 8);
+    printf("http_version: %s\n", http_version);
+    return 0;
+
+}
+
+int buildHTTPResponseHeader(char http_header[BUFSIZ], char http_version[HTTPVERSIONSIZE]) {
+
+    /*
+    Should look like: 
+HTTP/1.1 200 OK
+Content-Type: <>
+Content-Length: <>
+Connection: Keep-alive
+\r\n\r\n
+<file contents>
+
+    */
+}
+
+
+int serveFile(){
+/*
+    char cwd[WORKINGDIRECTORYPATHSIZE];
+    if (getcwd(cwd, WORKINGDIRECTORYPATHSIZE) != NULL) {
+        printf("Current working dir: %s\n", cwd);
+    } else {
+        perror("getcwd() error");
+        return 1;
+    }
+*/    
     return 0;
 }
  
@@ -64,6 +105,7 @@ int grabConnectionStatus() {
    FILE *server_response;
    char filename[FILENAMESIZE];
    char file_type[FILETYPESIZE];
+   char http_version[HTTPVERSIONSIZE];
    int position;
    int file_status;
    FILE *fp; 
@@ -102,9 +144,10 @@ int grabConnectionStatus() {
     
 
     grabFileName(buf, filename);
-
     grabFileType(buf, file_type);
+    grabHTTPVersion(buf, http_version);
 
+    
     bzero(buf, BUFSIZE);
     strcpy(buf, "Goodbye Client!\n");
     n = sendto(connfd, buf, BUFSIZE, 0, (struct sockaddr *) &clientaddr, clientlen);
