@@ -7,6 +7,7 @@
  #include <sys/socket.h>
  #include <netinet/in.h>
  #include <arpa/inet.h>
+ #include <sys/stat.h>
  
  #define BUFSIZE 2048
  #define FILENAMESIZE 40
@@ -30,11 +31,12 @@
     char *http_substr_pos = strstr(http_header, http_substr);
     if (http_substr_pos == NULL) printf("HTTP Request is Malformed\n");//NOTE: PUT ERROR CODE
     strncpy(file_name, http_header + HTTP_REQUEST_FILENAME_START_POSTION, http_substr_pos - http_header - HTTP_REQUEST_FILENAME_START_POSTION - 1);
-    printf("FileName: %s\n", file_name);
+    printf("In grabFileName FileName: %s\n", file_name);
     return 0;
 }
 
 // NOTE: This does not account for / or /inside 
+//NOTE: THIS DOES NOT ACCOUNT FOR FILES WITH MULTIPLE DOTS, such as the jquery file in wwww
 int grabFileType(char http_header[BUFSIZ], char file_type[FILETYPESIZE]) {
     char *dot_substr = ".";
     char *http_substr = "HTTP";
@@ -43,11 +45,27 @@ int grabFileType(char http_header[BUFSIZ], char file_type[FILETYPESIZE]) {
     if (http_substr_pos == NULL) printf("HTTP Request is Malformed\n");//NOTE: PUT ERROR CODE
     if (dot_substr_pos == NULL) printf("HTTP Request is Malformed\n");//NOTE: PUT ERROR CODE
     strncpy(file_type, http_header +(int)(dot_substr_pos - http_header) +1, (int)(http_substr_pos - dot_substr_pos) -2);
-    printf("file_type: %s\n", file_type);
+    // printf("file_type: %s\n", file_type);
     return 0;
 }
 
-int grabConnectionStatus() {
+int determineConnectionStatus(char http_header[BUFSIZ], char http_connection_status[40]) {
+// NOTE: Need to plan for the a in Keep-Alive being capitalized
+    char *connection_str = "Keep-alive:";
+    char *connection_str_pos = strstr(http_header, connection_str);
+    if (connection_str_pos == NULL){
+        strncpy(http_connection_status, "Connection: Close", 17);  
+    }else {
+        strncpy(http_connection_status, "Connection: Keep-Alive", 23);  
+    }
+
+    // printf("Connection: [Status]: %s\n", http_connection_status);
+
+    /*
+GET /index.html HTTP/1.1
+Host: localhost
+Connection: Keep-alive
+    */
     return 0;
 }
 
@@ -56,55 +74,95 @@ int grabHTTPVersion(char http_header[BUFSIZ], char http_version[HTTPVERSIONSIZE]
     char *http_substr_pos = strstr(http_header, http_substr);
     if (http_substr_pos == NULL) printf("HTTP Request is Malformed\n");//NOTE: PUT ERROR CODE
     strncpy(http_version, http_substr_pos, 8);
+    sprintf(http_version, "%s 200 OK",http_version);
+    // HTTP/1.1 is the result of the above
     printf("http_version: %s\n", http_version);
     return 0;
 }
 
 int determineResponseContentType(char file_type[FILETYPESIZE], char content_type[100]){
     if (strcmp(file_type, "html") == 0) {
-        printf("Content type is html!.\n");
+        strncpy(content_type, "Content-Type: text/htlm", sizeof("Content-Type: text/htlm"));
     } else if (strcmp(file_type, "txt") == 0) {
-        printf("Content type is txt!.\n");
+        strncpy(content_type, "Content-Type: text/plain", sizeof("Content-Type: text/plain"));
     } else if (strcmp(file_type, "png") == 0) {
-        printf("Content type is png.\n");
+        strncpy(content_type, "Content-Type: image/png", sizeof("Content-Type: image/png"));
     }  else if (strcmp(file_type, "gif") == 0) {
-        printf("Content type is gif.\n");
+        strncpy(content_type, "Content-Type: image/gif", sizeof("Content-Type: image/gif"));
     }  else if (strcmp(file_type, "jpg") == 0) {
-        printf("Content type is jpg.\n");
+        strncpy(content_type, "Content-Type: image/jpg", sizeof("Content-Type: image/jpg"));
     }  else if (strcmp(file_type, "ico") == 0) {
-        printf("Content type is ico.\n");
+        strncpy(content_type, "Content-Type: image/x-icon", sizeof("Content-Type: image/x-icon"));
     }  else if (strcmp(file_type, "css") == 0) {
-        printf("Content type is css.\n");
+        strncpy(content_type, "Content-Type: text/css", sizeof("Content-Type: text/css"));
     } else if (strcmp(file_type, "js") == 0) {
-        printf("Content type is js.\n");
+        strncpy(content_type, "Content-Type: application/javascript", sizeof("Content-Type: application/javascript"));
     } else {
-        printf("Invalid selection.\n");
+        printf("WRONG selection.\n");//NOTE: Link this to error header response
+        return -1;
     }
+
+    // printf("This is the content-type going in the response header: %s\n", content_type);
 
     return 0;
 
 }
 
-int buildHTTPResponseHeader(char http_header[BUFSIZ], char http_version[HTTPVERSIONSIZE]) {
-    char file_type[FILETYPESIZE]; 
-    char content_type[100];
-    char version[100] = "HTTP/";
-    // char content_type[100] = "Content-Type: ";
-    char content_length[100] = "Content-Length: ";
-    
-    grabFileType(http_header, file_type);
+// CITATION: https://dev.to/namantam1/ways-to-get-the-file-size-in-c-2mag
+int determineContentLength(char content_length[100], char filename[FILENAMESIZE]) {
+    struct stat file_status;
+    printf("IN DETERMINE CONTENT LENGHT filename: %s\n", filename);
+    if (stat(filename, &file_status) < 0) {
+        printf("IN THE -1 of determineContentLenght\n");
+        return -1;
+    }
+    sprintf(content_length, "Content-Length: %ld", file_status.st_size);
+    // printf("\nThis is content_length: %s\n", content_length);
+    // return file_status.st_size;
+    return 0;
+}
 
+int buildHTTPResponseHeader(char response_http_header[200], char http_header[BUFSIZ], char http_version[HTTPVERSIONSIZE], char filename[FILENAMESIZE], char file_type[FILETYPESIZE], char responseType[100], char http_connection_status[40], char content_length[100]) {
+
+    grabFileName(http_header, filename);
+    printf("IN buildHTTPRESPONSEHEDER filename: %s\n", filename);
+    determineContentLength(content_length, filename);
+
+
+    grabFileType(http_header, file_type);
+    printf("IN buildHTTPRESPONSEHEDER filename: %s\n", filename);
+
+    grabHTTPVersion(http_header, http_version);
+    printf("IN buildHTTPRESPONSEHEDER filename: %s\n", filename);
+
+    determineResponseContentType(file_type, responseType);
+    printf("IN buildHTTPRESPONSEHEDER filename: %s\n", filename);
+
+    determineConnectionStatus(http_header, http_connection_status);
+    printf("IN buildHTTPRESPONSEHEDER filename: %s\n", filename);
+    // determineContentLength(content_length, filename);
+    printf("\n");
+
+    sprintf(response_http_header, "%s\r\n%s\r\n%s\r\n%s\r\n\r\nHello World!", http_version, responseType, content_length, http_connection_status);
+    printf("\nTHIS IS MY RESPONSE HEADER: \n%s\n", response_http_header);
+
+    bzero(http_header, BUFSIZE);
+    bzero(http_version, HTTPVERSIONSIZE);
+    bzero(filename, FILENAMESIZE);    
+    bzero(file_type, FILETYPESIZE);    
+    bzero(responseType,100);    
+    bzero(http_connection_status, 40);
+    bzero(content_length, 100);
 
 
     /*
     Should look like: 
-HTTP/1.1 200 OK
-Content-Type: <>
-Content-Length: <>
-Connection: Keep-alive
-\r\n\r\n
-<file contents>
-
+    HTTP/1.1 200 OK
+    Content-Type: text/html X
+    Content-Length: 44000
+    Connection: Keep-alive
+    \r\n\r\n
+    <file contents>
     */
 }
 
@@ -142,7 +200,9 @@ int serveFile(){
    int position;
    int file_status;
    FILE *fp; 
-
+   char http_connection_status[40];
+   char content_length[100];
+   char response_http_header[200];
    if (argc != 2) {
      fprintf(stderr, "usage: %s <port>\n", argv[0]);
      exit(1);
@@ -165,32 +225,37 @@ int serveFile(){
 
 
    clientlen = sizeof(clientaddr);
- 
+   bzero(http_connection_status, 40);
+
    while (1) {
 
     bzero(buf, BUFSIZE);
     connfd = accept(listenfd, (struct sockaddr *) &clientaddr, &clientlen );
     printf("connection from %s, port %d\n", inet_ntop(AF_INET, &clientaddr.sin_addr, buf, sizeof(buf)), ntohs(clientaddr.sin_port) );
-    n = recvfrom(connfd, buf, BUFSIZE, 0, (struct sockaddr *) &clientaddr, &clientlen);
+    // n = recvfrom(connfd, buf, BUFSIZE, 0, (struct sockaddr *) &clientaddr, &clientlen);
+    n = recv(connfd, buf, BUFSIZE, 0);
     if (n < 0) error("ERROR in recvfrom\n");
-    printf("buf Below:\n%s\n", buf);
+    printf("HTTP REQUEST HEADER Below:\n%s\n", buf);
     
 
-    grabFileName(buf, filename);
-    grabFileType(buf, file_type);
-    grabHTTPVersion(buf, http_version);
-    determineResponseContentType(file_type, responseType);
 
-    bzero(buf, BUFSIZE);
-    strcpy(buf, "Goodbye Client!\n");
-    n = sendto(connfd, buf, BUFSIZE, 0, (struct sockaddr *) &clientaddr, clientlen);
-    
+
+    buildHTTPResponseHeader(response_http_header, buf, http_version, filename,  file_type, responseType,  http_connection_status, content_length);
+
+    // n = send(connfd, buf, BUFSIZE, 0);
+    n = send(connfd, response_http_header,200, 0);
+    // n = sendto(connfd, buf, BUFSIZE, 0, (struct sockaddr *) &clientaddr, clientlen);
     if (n < 0) error("ERROR in sendto\n");
+    bzero(buf, BUFSIZE);
+    // strcpy(buf, "Goodbye Client!\n");
+
     close(connfd);
      
-     bzero(buf, BUFSIZE);
-     bzero(filename, FILENAMESIZE);    
-     bzero(file_type, FILETYPESIZE);    
+    //  bzero(buf, BUFSIZE);
+    //  bzero(filename, FILENAMESIZE);    
+    //  bzero(file_type, FILETYPESIZE);    
+    //  bzero(http_connection_status, 40);
+
      
  
    }
