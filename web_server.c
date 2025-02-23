@@ -6,16 +6,20 @@
  #include <sys/types.h> 
  #include <sys/socket.h>
  #include <netinet/in.h>
+ #include <netinet/tcp.h>
  #include <arpa/inet.h>
  #include <sys/stat.h>
- 
+ #include <errno.h>
+ #include <pthread.h>
+
+
  #define BUFSIZE 2048
- #define FILENAMESIZE 40
- #define FILETYPESIZE 5
+ #define FILENAMESIZE 100
+ #define FILETYPESIZE 100
  #define LISTENQ 10
  #define HTTP_REQUEST_FILENAME_START_POSTION 5
  #define WORKINGDIRECTORYPATHSIZE 1000
- #define HTTPVERSIONSIZE 10
+ #define HTTPVERSIONSIZE 100
 
  
  /*
@@ -31,7 +35,7 @@
     char *http_substr_pos = strstr(http_header, http_substr);
     if (http_substr_pos == NULL) printf("HTTP Request is Malformed\n");//NOTE: PUT ERROR CODE
     strncpy(file_name, http_header + HTTP_REQUEST_FILENAME_START_POSTION, http_substr_pos - http_header - HTTP_REQUEST_FILENAME_START_POSTION - 1);
-    printf("In grabFileName FileName: %s\n", file_name);
+    // printf("In grabFileName FileName: %s\n", file_name);
     return 0;
 }
 
@@ -49,17 +53,38 @@ int grabFileType(char http_header[BUFSIZ], char file_type[FILETYPESIZE]) {
     return 0;
 }
 
-int determineConnectionStatus(char http_header[BUFSIZ], char http_connection_status[40]) {
-// NOTE: Need to plan for the a in Keep-Alive being capitalized
-    char *connection_str = "Keep-alive:";
-    char *connection_str_pos = strstr(http_header, connection_str);
-    if (connection_str_pos == NULL){
-        strncpy(http_connection_status, "Connection: Close", 17);  
-    }else {
-        strncpy(http_connection_status, "Connection: Keep-Alive", 23);  
+// NOTE: NEED TO BUILD FAILSAFE FOR VERSIONS BESIDES 1.0 / 1.1 b/c 2.0 doesn't show up in the same way on the request header
+int determineConnectionStatus(char http_header[BUFSIZ], char http_connection_status[40], char http_version[HTTPVERSIONSIZE], int client_socket) {
+// NOTE: Need to plan for the a in Keep-Alive and close being agnostic to capitalization
+    char *keep_alive_str = ": Keep-alive";
+    char *keep_alive_str_pos = strstr(http_header, keep_alive_str);
+    char *close_str = ": Close";
+    char *close_str_pos = strstr(http_header, close_str);
+    //citation for keep-alive logic: https://stackoverflow.com/questions/17740492/how-i-will-use-setsockopt-and-getsockopt-with-keep-alive-in-linux-c-programming
+    //https://linux.die.net/man/7/tcp
+    int keepcnt = 4;
+    int keepidle = 3;
+    int keepintvl = 3;
+
+    if (keep_alive_str_pos != NULL)  {
+        strncpy(http_connection_status, "Connection: Keep-Alive", 23);
+        setsockopt(client_socket, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(int));
+        setsockopt(client_socket, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(int));
+        setsockopt(client_socket, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(int));    
+    } else if (close_str_pos != NULL) {
+        strncpy(http_connection_status, "Connection: Close", 17);
+    } else if (strncmp(http_version, "HTTP/1.0", 8) == 0) {
+        strncpy(http_connection_status, "Connection: Close", 17);
+    } else if (strncmp(http_version, "HTTP/1.1", 8) == 0) {
+        strncpy(http_connection_status, "Connection: Keep-Alive", 23);
+        setsockopt(client_socket, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(int));
+        setsockopt(client_socket, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(int));
+        setsockopt(client_socket, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(int));
+      
+    } else {
+        strncpy(http_connection_status, "Connection: Unkown", 18);  
     }
 
-    // printf("Connection: [Status]: %s\n", http_connection_status);
 
     /*
 GET /index.html HTTP/1.1
@@ -69,15 +94,41 @@ Connection: Keep-alive
     return 0;
 }
 
+int checkHTTPMethodIsGet(char http_header[BUFSIZ]) {
+    char *http_get_substr = "GET ";
+    char *http_get_substr_pos = strstr(http_header, http_get_substr);
+    if (http_get_substr_pos == NULL) return -1;
+    return 0;
+}
+
 int grabHTTPVersion(char http_header[BUFSIZ], char http_version[HTTPVERSIONSIZE]){
     char *http_substr = "HTTP";
     char *http_substr_pos = strstr(http_header, http_substr);
     if (http_substr_pos == NULL) printf("HTTP Request is Malformed\n");//NOTE: PUT ERROR CODE
     strncpy(http_version, http_substr_pos, 8);
-    sprintf(http_version, "%s 200 OK",http_version);
-    // HTTP/1.1 is the result of the above
-    printf("http_version: %s\n", http_version);
+    // printf("IN grabHTTPVersion: http_version:%s test\n", http_version);
+    // printf("strcmp of HTTP/1.1: %d", strcmp(http_version, "HTTP/1.1"));
+    if ( (strncmp(http_version, "HTTP/1.1", 8) != 0) && (strncmp(http_version, "HTTP/1.0", 8) != 0) ) {
+        printf("\nHtpp version is not 1.0 or 1.1\n");
+        return 5;
+    }
     return 0;
+}
+
+int setStatusCode(char http_version[HTTPVERSIONSIZE], int status) {
+    if (status == 0) {
+        sprintf(http_version, "%s 200 OK",http_version); 
+    }else if (status == 1 ){
+        sprintf(http_version, "%s 400 Bad Request",http_version); 
+    }else if (status == 2 ){
+        sprintf(http_version, "%s 403 Forbidden",http_version); 
+    }else if (status == 3 ){
+        sprintf(http_version, "%s 404 Not Found",http_version);
+    }else if (status == 4 ){
+        sprintf(http_version, "%s 405 Method Not Allowed",http_version);
+    }else if (status == 5 ){
+        sprintf(http_version, "%s 505 HTTP Version Not Supported",http_version);
+    }
 }
 
 int determineResponseContentType(char file_type[FILETYPESIZE], char content_type[100]){
@@ -98,6 +149,8 @@ int determineResponseContentType(char file_type[FILETYPESIZE], char content_type
     } else if (strcmp(file_type, "js") == 0) {
         strncpy(content_type, "Content-Type: application/javascript", sizeof("Content-Type: application/javascript"));
     } else {
+        strncpy(content_type, "Content-Type: unknown", sizeof("Content-Type: unknown"));
+
         printf("WRONG selection.\n");//NOTE: Link this to error header response
         return -1;
     }
@@ -111,7 +164,7 @@ int determineResponseContentType(char file_type[FILETYPESIZE], char content_type
 // CITATION: https://dev.to/namantam1/ways-to-get-the-file-size-in-c-2mag
 int determineContentLength(char content_length[100], char filename[FILENAMESIZE]) {
     struct stat file_status;
-    printf("IN DETERMINE CONTENT LENGHT filename: %s\n", filename);
+    // printf("IN DETERMINE CONTENT LENGHT filename: %s\n", filename);
     if (stat(filename, &file_status) < 0) {
         printf("IN THE -1 of determineContentLenght\n");
         return -1;
@@ -122,31 +175,173 @@ int determineContentLength(char content_length[100], char filename[FILENAMESIZE]
     return 0;
 }
 
-int buildHTTPResponseHeader(char response_http_header[200], char http_header[BUFSIZ], char http_version[HTTPVERSIONSIZE], char filename[FILENAMESIZE], char file_type[FILETYPESIZE], char responseType[100], char http_connection_status[40], char content_length[100]) {
-
-    grabFileName(http_header, filename);
-    printf("IN buildHTTPRESPONSEHEDER filename: %s\n", filename);
-    determineContentLength(content_length, filename);
-
-
-    grabFileType(http_header, file_type);
-    printf("IN buildHTTPRESPONSEHEDER filename: %s\n", filename);
-
+int buildHTTPResponseHeader(char response_http_header[200], char http_header[BUFSIZ], char http_version[HTTPVERSIONSIZE], char filename[FILENAMESIZE], char file_type[FILETYPESIZE], char responseType[100], char http_connection_status[40], char content_length[100], int client_socket) {
+    int status = 0;
+    // if ()
     grabHTTPVersion(http_header, http_version);
-    printf("IN buildHTTPRESPONSEHEDER filename: %s\n", filename);
+    grabFileName(http_header, filename);
 
-    determineResponseContentType(file_type, responseType);
-    printf("IN buildHTTPRESPONSEHEDER filename: %s\n", filename);
 
-    determineConnectionStatus(http_header, http_connection_status);
-    printf("IN buildHTTPRESPONSEHEDER filename: %s\n", filename);
-    // determineContentLength(content_length, filename);
-    printf("\n");
+    printf("FILENAME: %s\n", filename);
+    if (checkHTTPMethodIsGet(http_header) == -1){
+        //CITATION: https://medium.com/@DanSodkiewicz/simple-example-of-a-program-checking-file-access-permissions-in-c-1015e0715499
+        sprintf(response_http_header, "%s 405 Method Not Allowed\r\n\r\n 405Method Not Allowed", http_version);
+        return -1;
 
-    sprintf(response_http_header, "%s\r\n%s\r\n%s\r\n%s\r\n\r\nHello World!", http_version, responseType, content_length, http_connection_status);
-    printf("\nTHIS IS MY RESPONSE HEADER: \n%s\n", response_http_header);
+    }else if (access(filename, R_OK) != 0) {
+        if (errno == ENOENT) {
+            sprintf(response_http_header, "%s 404 File Not Found\r\n\r\n404 File Not Found", http_version);
+        }else if (errno == EACCES) {
+            sprintf(response_http_header, "%s 403 Forbidden\r\n\r\n403 Forbidden", http_version);
+        }
+        return -1;
+        
+    }else {
+        printf("IN ELSE \n");
+        grabFileName(http_header, filename);
+        determineContentLength(content_length, filename);
+        grabFileType(http_header, file_type);
+        // status = grabHTTPVersion(http_header, http_version);
+        determineResponseContentType(file_type, responseType);
+        setStatusCode(http_version, status);
+        determineConnectionStatus(http_header, http_connection_status, http_version, client_socket);
+    
+        sprintf(response_http_header, "%s\r\n%s\r\n%s\r\n%s\r\n\r\n", http_version, responseType, content_length, http_connection_status);
+    
+    }
+/*
+    NOTE: Still need to work on: 
+    QUESTIONS: HTTP2 on CURL is reflected as http1.1 with an additional header. Is that how all (wget, aria2c) of them look? 
 
-    bzero(http_header, BUFSIZE);
+    400 Bad Request
+    The request could not be parsed or is malformed
+
+
+    505 HTTP Version Not Supported
+    An HTTP version other than 1.0 or 1.1 was requested
+
+    */
+
+
+    // int length = strlen(response_http_header);
+    // printf("Hex values: ");
+    // for (int i = 0; i < length; i++) {
+    //     printf("%02x, %c\n", response_http_header[i], response_http_header[i]);
+    // }
+
+   return 0;
+}
+
+
+
+//CITITATION: BEEJ GUIDE 7.4 sendall function
+int sendall(int s, char *buf, int len){
+    int total = 0;        // how many bytes we've sent
+    int bytesleft = len; // how many we have left to send
+    int n;
+    while(total < len) {
+        n = send(s, buf+total, bytesleft, 0);
+        if (n == -1) { break; }
+        total += n;
+        bytesleft -= n;
+    }
+
+    if (n == -1) return -1;
+    return total;
+} 
+
+//CITATION: https://www.youtube.com/watch?v=Pg_4Jz8ZIH4
+void *handle_connection(void *p_client_socket) {
+    int client_socket = * ((int*)p_client_socket);
+    free(p_client_socket);
+
+    int n; 
+    char buf[BUFSIZE]; 
+    char filename[FILENAMESIZE];
+    char file_type[FILETYPESIZE];
+    char http_version[HTTPVERSIONSIZE];
+    char responseType[100];
+    FILE *fp; 
+    char http_connection_status[40];
+    char content_length[100];
+    char response_http_header[200];
+ 
+    
+
+    bzero(buf, BUFSIZE);
+    bzero(response_http_header, 200);
+    bzero(http_version, HTTPVERSIONSIZE);
+    bzero(filename, FILENAMESIZE);
+    bzero(file_type, FILETYPESIZE);
+    bzero(responseType, 100);
+    bzero(http_connection_status, 40);
+    bzero(content_length, 100);
+
+    // int keepcnt = 4;
+    // int keepidle = 3;
+    // int keepintvl = 3;
+    // setsockopt(client_socket, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(int));
+    // setsockopt(client_socket, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(int));
+    // setsockopt(client_socket, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(int));
+    
+
+    n = recv(client_socket, buf, BUFSIZE, 0);
+
+    if (n < 0) error("ERROR in recvfrom\n");
+    
+    printf("HTTP REQUEST HEADER Below:\n%s\n", buf);
+    printf("before build http response sprintf open file: filename: %s\n", filename);
+
+
+    if(buildHTTPResponseHeader(response_http_header, buf, http_version, filename,  file_type, responseType,  http_connection_status, content_length, client_socket) == -1) {
+        n = send(client_socket, response_http_header, strlen(response_http_header), 0);
+        return NULL;
+        // return -1;
+    }
+    
+    //STARTING SENDING FILE DATA
+    int total_bytes_sent_during_one_read; 
+    int bytes_remaining;
+    int bytes_read;
+    
+    fp = fopen(filename, "r");
+  
+    if (fp == NULL) {
+        printf("THERE WAS AN ERROR OPENING THE FILE!\n");
+        return NULL;
+    //   return -1; 
+    } 
+
+    n = send(client_socket, response_http_header, strlen(response_http_header), 0);
+    printf("This is the RESPONSE header: \n%s\n", response_http_header);    
+    bzero(buf, BUFSIZE);
+
+
+    
+    while (1){
+      bytes_read = fread(buf, 1, BUFSIZE, fp);
+
+      if (bytes_read < 1) {
+        printf("Bytest read less than 1!!!\n");
+        break;
+      }
+
+      int length = strlen(buf);
+  
+
+      if (sendall(client_socket, buf, BUFSIZE) == -1) {
+        error("Error in sending file data");
+      }
+
+  
+      bzero(buf, BUFSIZE);
+    } 
+
+
+    close(client_socket);
+    fclose(fp);
+
+    bzero(buf, BUFSIZE);
     bzero(http_version, HTTPVERSIONSIZE);
     bzero(filename, FILENAMESIZE);    
     bzero(file_type, FILETYPESIZE);    
@@ -155,31 +350,12 @@ int buildHTTPResponseHeader(char response_http_header[200], char http_header[BUF
     bzero(content_length, 100);
 
 
-    /*
-    Should look like: 
-    HTTP/1.1 200 OK
-    Content-Type: text/html X
-    Content-Length: 44000
-    Connection: Keep-alive
-    \r\n\r\n
-    <file contents>
-    */
-}
-
-
-int serveFile(){
-/*
-    char cwd[WORKINGDIRECTORYPATHSIZE];
-    if (getcwd(cwd, WORKINGDIRECTORYPATHSIZE) != NULL) {
-        printf("Current working dir: %s\n", cwd);
-    } else {
-        perror("getcwd() error");
-        return 1;
-    }
-*/    
-    return 0;
+    return NULL;
 }
  
+
+
+
  int main(int argc, char **argv) {
    int sockfd; 
    int listenfd, connfd;
@@ -188,25 +364,24 @@ int serveFile(){
    struct sockaddr_in serveraddr; 
    struct sockaddr_in clientaddr;
    struct hostent *hostp;
-   char buf[BUFSIZE]; 
    char *hostaddrp;
    int optval;
    int n; 
-   FILE *server_response;
+   char buf[BUFSIZE]; 
    char filename[FILENAMESIZE];
    char file_type[FILETYPESIZE];
    char http_version[HTTPVERSIONSIZE];
    char responseType[100];
-   int position;
-   int file_status;
    FILE *fp; 
    char http_connection_status[40];
    char content_length[100];
    char response_http_header[200];
+
    if (argc != 2) {
      fprintf(stderr, "usage: %s <port>\n", argv[0]);
      exit(1);
    }
+
    portno = atoi(argv[1]);
  
    listenfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -225,38 +400,91 @@ int serveFile(){
 
 
    clientlen = sizeof(clientaddr);
-   bzero(http_connection_status, 40);
 
    while (1) {
+    // bzero(buf, BUFSIZE);
+    // bzero(response_http_header, 200);
+    // bzero(http_version, HTTPVERSIONSIZE);
+    // bzero(filename, FILENAMESIZE);
+    // bzero(file_type, FILETYPESIZE);
+    // bzero(responseType, 100);
+    // bzero(http_connection_status, 40);
+    // bzero(content_length, 100);
 
-    bzero(buf, BUFSIZE);
     connfd = accept(listenfd, (struct sockaddr *) &clientaddr, &clientlen );
-    printf("connection from %s, port %d\n", inet_ntop(AF_INET, &clientaddr.sin_addr, buf, sizeof(buf)), ntohs(clientaddr.sin_port) );
-    // n = recvfrom(connfd, buf, BUFSIZE, 0, (struct sockaddr *) &clientaddr, &clientlen);
-    n = recv(connfd, buf, BUFSIZE, 0);
-    if (n < 0) error("ERROR in recvfrom\n");
-    printf("HTTP REQUEST HEADER Below:\n%s\n", buf);
+    printf("\nconnection from %s, port %d\n", inet_ntop(AF_INET, &clientaddr.sin_addr, buf, sizeof(buf)), ntohs(clientaddr.sin_port) );
+    //Thread Should start here!
+//CITATION: https://www.youtube.com/watch?v=Pg_4Jz8ZIH4
+    pthread_t t;
+    int *pclient = malloc(sizeof(int));
+    *pclient = connfd;
+
+    pthread_create(&t, NULL, handle_connection, pclient);
     
+    
+    //CODE BEFORE THREADING PUT IN PLACE
+    // n = recv(connfd, buf, BUFSIZE, 0);
+
+    // if (n < 0) error("ERROR in recvfrom\n");
+    
+    // printf("HTTP REQUEST HEADER Below:\n%s\n", buf);
+    // printf("before build http response sprintf open file: filename: %s\n", filename);
 
 
+    // if(buildHTTPResponseHeader(response_http_header, buf, http_version, filename,  file_type, responseType,  http_connection_status, content_length) == -1) {
+    //     n = send(connfd, response_http_header, strlen(response_http_header), 0);
+    //     return -1;
+    // }
+    
+    // //STARTING SENDING FILE DATA
+    // int total_bytes_sent_during_one_read; 
+    // int bytes_remaining;
+    // int bytes_read;
+    
+    // fp = fopen(filename, "r");
+  
+    // if (fp == NULL) {
+    //   printf("THERE WAS AN ERROR OPENING THE FILE!\n");
+    //   return -1; 
+    // } 
 
-    buildHTTPResponseHeader(response_http_header, buf, http_version, filename,  file_type, responseType,  http_connection_status, content_length);
+    // n = send(connfd, response_http_header, strlen(response_http_header), 0);
+    // printf("This is the RESPONSE header: \n%s\n", response_http_header);    
+    // bzero(buf, BUFSIZE);
 
-    // n = send(connfd, buf, BUFSIZE, 0);
-    n = send(connfd, response_http_header,200, 0);
-    // n = sendto(connfd, buf, BUFSIZE, 0, (struct sockaddr *) &clientaddr, clientlen);
-    if (n < 0) error("ERROR in sendto\n");
-    bzero(buf, BUFSIZE);
-    // strcpy(buf, "Goodbye Client!\n");
 
-    close(connfd);
-     
-    //  bzero(buf, BUFSIZE);
-    //  bzero(filename, FILENAMESIZE);    
-    //  bzero(file_type, FILETYPESIZE);    
-    //  bzero(http_connection_status, 40);
+    
+    // while (1){
+    //   bytes_read = fread(buf, 1, BUFSIZE, fp);
 
-     
+    //   if (bytes_read < 1) {
+    //     printf("Bytest read less than 1!!!\n");
+    //     break;
+    //   }
+
+    //   int length = strlen(buf);
+  
+
+    //   if (sendall(connfd, buf, BUFSIZE) == -1) {
+    //     error("Error in sending file data");
+    //   }
+
+  
+    //   bzero(buf, BUFSIZE);
+    // } 
+
+
+    // close(connfd);
+    // fclose(fp);
+
+    // bzero(buf, BUFSIZE);
+    // bzero(http_version, HTTPVERSIONSIZE);
+    // bzero(filename, FILENAMESIZE);    
+    // bzero(file_type, FILETYPESIZE);    
+    // bzero(responseType,100);    
+    // bzero(http_connection_status, 40);
+    // bzero(content_length, 100);
+
  
    }
  
@@ -271,9 +499,7 @@ Host: localhost
 Connection: Keep-alive
 
 
-
 If the requested URL is a directory (ie: GET / HTTP/1.1 or GET /inside/ HTTP/1.1), 
 the web server should attempt to find a default page named index.html or index.htm in the requested directory. 
 
-If the client sends a HTTP/1.0 request, the server must respond back with a HTTP/1.0 protocol in its reply.  Similarly for the HTTP/1.1 protocol.
  */
