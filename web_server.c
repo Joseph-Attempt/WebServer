@@ -16,7 +16,7 @@
  #define BUFSIZE 2048
  #define FILENAMESIZE 100
  #define FILETYPESIZE 100
- #define LISTENQ 10
+ #define LISTENQ 24
  #define HTTP_REQUEST_FILENAME_START_POSTION 5
  #define WORKINGDIRECTORYPATHSIZE 1000
  #define HTTPVERSIONSIZE 100
@@ -29,45 +29,84 @@
    perror(msg);
    exit(1);
  }
+
  
- int grabFileName(char http_header[BUFSIZ], char file_name[FILENAMESIZE]) {
+ int verifyHTTPHeader(char http_header[BUFSIZE]) {
+    char http_header_first_line[200];
+    char *header_first_line_end_pos = strstr(http_header, "\r\n");
+    //Checking that \r\n does exist. 
+    //Potential errors, the string might be a http request with no \r\n at the end of the first line. \r\n might be at the end of second, third, etc. line 
+    if (header_first_line_end_pos == NULL) return -1;
+    strncpy(http_header_first_line, http_header, header_first_line_end_pos - http_header);
+    char *http_header_first_line_verb = strtok(http_header_first_line, " ");
+    char *http_header_first_line_path = strtok(NULL, " ");
+    char *http_header_first_line_version = strtok(NULL, " ");
+    char *should_be_null = strtok(NULL, " ");
+    //Checking for only three elements in the first line of the http request header, when separated by a space
+    //Potential Errors, this does not actually check if the first element is a HTTP verb, 2nd element Path, 3rd Element Version.
+    if (should_be_null != NULL | http_header_first_line_verb == NULL || http_header_first_line_path == NULL || http_header_first_line_version == NULL) return -1;
+    return 0;
+ }
+
+
+ int grabFileName(char http_header[BUFSIZE], char file_name[FILENAMESIZE], char response_http_header[200], char http_version[HTTPVERSIONSIZE]) {
     char *http_substr = "HTTP";
     char *http_substr_pos = strstr(http_header, http_substr);
     if (http_substr_pos == NULL) printf("HTTP Request is Malformed\n");//NOTE: PUT ERROR CODE
     strncpy(file_name, http_header + HTTP_REQUEST_FILENAME_START_POSTION, http_substr_pos - http_header - HTTP_REQUEST_FILENAME_START_POSTION - 1);
-    // printf("In grabFileName FileName: %s\n", file_name);
+    if (access(file_name, R_OK) != 0) {
+        if (errno == ENOENT) {
+            sprintf(response_http_header, "%s 404 File Not Found\r\n\r\n404 File Not Found", http_version);
+        }else if (errno == EACCES) {
+            sprintf(response_http_header, "%s 403 Forbidden\r\n\r\n403 Forbidden", http_version);
+        }
+        return -1;
+    }
+
     return 0;
 }
 
 // NOTE: This does not account for / or /inside 
-//NOTE: THIS DOES NOT ACCOUNT FOR FILES WITH MULTIPLE DOTS, such as the jquery file in wwww
-int grabFileType(char http_header[BUFSIZ], char file_type[FILETYPESIZE]) {
+int grabFileType(char http_header[BUFSIZE], char file_type[FILETYPESIZE]) {
     char *dot_substr = ".";
     char *http_substr = "HTTP";
     char *http_substr_pos = strstr(http_header, http_substr);
     char *dot_substr_pos = strstr(http_header, dot_substr);
-    if (http_substr_pos == NULL) printf("HTTP Request is Malformed\n");//NOTE: PUT ERROR CODE
-    if (dot_substr_pos == NULL) printf("HTTP Request is Malformed\n");//NOTE: PUT ERROR CODE
+
+    if (http_substr_pos == NULL) printf("HTTP Request is Malformed\n");//NOTE: PUT ERROR CODE for no HTTP (MALFORMED)
+    if (dot_substr_pos == NULL) printf("HTTP Request is Malformed\n");//NOTE: PUT ERROR CODE for no extension (MALFORMED OR CAN't FIND FILE)
     strncpy(file_type, http_header +(int)(dot_substr_pos - http_header) +1, (int)(http_substr_pos - dot_substr_pos) -2);
-    // printf("file_type: %s\n", file_type);
+
+   //Citation: https://stackoverflow.com/questions/5309471/getting-file-extension-in-c
+   //Below is to deal with multiple dot files, such as the jquery
+    char *ext = strrchr(file_type, '.');
+    if (ext) {
+        strcpy(file_type, ext +1);       
+    }
     return 0;
 }
 
 // NOTE: NEED TO BUILD FAILSAFE FOR VERSIONS BESIDES 1.0 / 1.1 b/c 2.0 doesn't show up in the same way on the request header
-int determineConnectionStatus(char http_header[BUFSIZ], char http_connection_status[40], char http_version[HTTPVERSIONSIZE], int client_socket) {
+int determineConnectionStatus(char http_header[BUFSIZE], char http_connection_status[40], char http_version[HTTPVERSIONSIZE], int client_socket) {
 // NOTE: Need to plan for the a in Keep-Alive and close being agnostic to capitalization
     char *keep_alive_str = ": Keep-alive";
     char *keep_alive_str_pos = strstr(http_header, keep_alive_str);
     char *close_str = ": Close";
     char *close_str_pos = strstr(http_header, close_str);
+
     //citation for keep-alive logic: https://stackoverflow.com/questions/17740492/how-i-will-use-setsockopt-and-getsockopt-with-keep-alive-in-linux-c-programming
     //https://linux.die.net/man/7/tcp
-    int keepcnt = 4;
-    int keepidle = 3;
-    int keepintvl = 3;
+    int keepcnt = 5;
+    int keepidle = 30;
+    int keepintvl = 120;
+    int optval = 1;
 
     if (keep_alive_str_pos != NULL)  {
         strncpy(http_connection_status, "Connection: Keep-Alive", 23);
+        // setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, (const void *)&optval , sizeof(int));
+
+        // if (setsockopt(client_socket, SOL_SOCKET, SO_KEEPALIVE, &optval, sizeof(int)) == -1) printf("IT DID NOT WORK\n");
+        // printf("WTH\n");
         setsockopt(client_socket, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(int));
         setsockopt(client_socket, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(int));
         setsockopt(client_socket, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(int));    
@@ -77,6 +116,9 @@ int determineConnectionStatus(char http_header[BUFSIZ], char http_connection_sta
         strncpy(http_connection_status, "Connection: Close", 17);
     } else if (strncmp(http_version, "HTTP/1.1", 8) == 0) {
         strncpy(http_connection_status, "Connection: Keep-Alive", 23);
+        // if (setsockopt(client_socket, SOL_SOCKET, SO_KEEPALIVE, &optval, sizeof(int)) == -1) printf("IT DID NOT WORK\n");
+        // printf("WTH\n");
+
         setsockopt(client_socket, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(int));
         setsockopt(client_socket, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(int));
         setsockopt(client_socket, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(int));
@@ -94,24 +136,19 @@ Connection: Keep-alive
     return 0;
 }
 
-int checkHTTPMethodIsGet(char http_header[BUFSIZ]) {
+int checkHTTPMethodIsGet(char http_header[BUFSIZE]) {
     char *http_get_substr = "GET ";
     char *http_get_substr_pos = strstr(http_header, http_get_substr);
     if (http_get_substr_pos == NULL) return -1;
     return 0;
 }
 
-int grabHTTPVersion(char http_header[BUFSIZ], char http_version[HTTPVERSIONSIZE]){
+int grabHTTPVersion(char http_header[BUFSIZE], char http_version[HTTPVERSIONSIZE]){
     char *http_substr = "HTTP";
     char *http_substr_pos = strstr(http_header, http_substr);
-    if (http_substr_pos == NULL) printf("HTTP Request is Malformed\n");//NOTE: PUT ERROR CODE
+    if (http_substr_pos == NULL) printf("HTTP Request is Malformed\n");//NOTE: PUT ERROR CODE //THINK ABOUT CHECKING THIS in verifyinghttp method
     strncpy(http_version, http_substr_pos, 8);
-    // printf("IN grabHTTPVersion: http_version:%s test\n", http_version);
-    // printf("strcmp of HTTP/1.1: %d", strcmp(http_version, "HTTP/1.1"));
-    if ( (strncmp(http_version, "HTTP/1.1", 8) != 0) && (strncmp(http_version, "HTTP/1.0", 8) != 0) ) {
-        printf("\nHtpp version is not 1.0 or 1.1\n");
-        return 5;
-    }
+    if ( (strncmp(http_version, "HTTP/1.1", 8) != 0) && (strncmp(http_version, "HTTP/1.0", 8) != 0) ) return -1;
     return 0;
 }
 
@@ -150,7 +187,6 @@ int determineResponseContentType(char file_type[FILETYPESIZE], char content_type
         strncpy(content_type, "Content-Type: application/javascript", sizeof("Content-Type: application/javascript"));
     } else {
         strncpy(content_type, "Content-Type: unknown", sizeof("Content-Type: unknown"));
-
         printf("WRONG selection.\n");//NOTE: Link this to error header response
         return -1;
     }
@@ -164,44 +200,30 @@ int determineResponseContentType(char file_type[FILETYPESIZE], char content_type
 // CITATION: https://dev.to/namantam1/ways-to-get-the-file-size-in-c-2mag
 int determineContentLength(char content_length[100], char filename[FILENAMESIZE]) {
     struct stat file_status;
-    // printf("IN DETERMINE CONTENT LENGHT filename: %s\n", filename);
-    if (stat(filename, &file_status) < 0) {
-        printf("IN THE -1 of determineContentLenght\n");
-        return -1;
-    }
+    if (stat(filename, &file_status) < 0) return -1;
     sprintf(content_length, "Content-Length: %ld", file_status.st_size);
-    // printf("\nThis is content_length: %s\n", content_length);
-    // return file_status.st_size;
     return 0;
 }
 
-int buildHTTPResponseHeader(char response_http_header[200], char http_header[BUFSIZ], char http_version[HTTPVERSIONSIZE], char filename[FILENAMESIZE], char file_type[FILETYPESIZE], char responseType[100], char http_connection_status[40], char content_length[100], int client_socket) {
+int buildHTTPResponseHeader(char response_http_header[200], char http_header[BUFSIZE], char http_version[HTTPVERSIONSIZE], char filename[FILENAMESIZE], char file_type[FILETYPESIZE], char responseType[100], char http_connection_status[40], char content_length[100], int client_socket) {
     int status = 0;
-    // if ()
-    grabHTTPVersion(http_header, http_version);
-    grabFileName(http_header, filename);
-
-
-    printf("FILENAME: %s\n", filename);
-    if (checkHTTPMethodIsGet(http_header) == -1){
+    if (verifyHTTPHeader(http_header) == -1) {
+        sprintf(response_http_header, "%s 400 Bad Request\r\n\r\n400 Bad Request", http_version);
+        return -1;
+    }else if (grabHTTPVersion(http_header, http_version) == -1){
+        sprintf(response_http_header, "%s 505 HTTP Version Not Supported\r\n\r\n505 HTTP Version Not Supported", http_version);
+        return -1;
+    } else if (grabFileName(http_header, filename, response_http_header, http_version)) {
+        return -1;
+    }
+    else if (checkHTTPMethodIsGet(http_header) == -1){
         //CITATION: https://medium.com/@DanSodkiewicz/simple-example-of-a-program-checking-file-access-permissions-in-c-1015e0715499
         sprintf(response_http_header, "%s 405 Method Not Allowed\r\n\r\n 405Method Not Allowed", http_version);
         return -1;
-
-    }else if (access(filename, R_OK) != 0) {
-        if (errno == ENOENT) {
-            sprintf(response_http_header, "%s 404 File Not Found\r\n\r\n404 File Not Found", http_version);
-        }else if (errno == EACCES) {
-            sprintf(response_http_header, "%s 403 Forbidden\r\n\r\n403 Forbidden", http_version);
-        }
-        return -1;
-        
-    }else {
+    } else {
         printf("IN ELSE \n");
-        grabFileName(http_header, filename);
         determineContentLength(content_length, filename);
         grabFileType(http_header, file_type);
-        // status = grabHTTPVersion(http_header, http_version);
         determineResponseContentType(file_type, responseType);
         setStatusCode(http_version, status);
         determineConnectionStatus(http_header, http_connection_status, http_version, client_socket);
@@ -209,25 +231,6 @@ int buildHTTPResponseHeader(char response_http_header[200], char http_header[BUF
         sprintf(response_http_header, "%s\r\n%s\r\n%s\r\n%s\r\n\r\n", http_version, responseType, content_length, http_connection_status);
     
     }
-/*
-    NOTE: Still need to work on: 
-    QUESTIONS: HTTP2 on CURL is reflected as http1.1 with an additional header. Is that how all (wget, aria2c) of them look? 
-
-    400 Bad Request
-    The request could not be parsed or is malformed
-
-
-    505 HTTP Version Not Supported
-    An HTTP version other than 1.0 or 1.1 was requested
-
-    */
-
-
-    // int length = strlen(response_http_header);
-    // printf("Hex values: ");
-    // for (int i = 0; i < length; i++) {
-    //     printf("%02x, %c\n", response_http_header[i], response_http_header[i]);
-    // }
 
    return 0;
 }
@@ -236,8 +239,8 @@ int buildHTTPResponseHeader(char response_http_header[200], char http_header[BUF
 
 //CITITATION: BEEJ GUIDE 7.4 sendall function
 int sendall(int s, char *buf, int len){
-    int total = 0;        // how many bytes we've sent
-    int bytesleft = len; // how many we have left to send
+    int total = 0;        
+    int bytesleft = len; 
     int n;
     while(total < len) {
         n = send(s, buf+total, bytesleft, 0);
@@ -245,7 +248,6 @@ int sendall(int s, char *buf, int len){
         total += n;
         bytesleft -= n;
     }
-
     if (n == -1) return -1;
     return total;
 } 
@@ -254,28 +256,30 @@ int sendall(int s, char *buf, int len){
 void *handle_connection(void *p_client_socket) {
     int client_socket = * ((int*)p_client_socket);
     free(p_client_socket);
-
-    int n; 
     char buf[BUFSIZE]; 
     char filename[FILENAMESIZE];
     char file_type[FILETYPESIZE];
     char http_version[HTTPVERSIONSIZE];
     char responseType[100];
-    FILE *fp; 
     char http_connection_status[40];
     char content_length[100];
     char response_http_header[200];
- 
-    
+    FILE *fp; 
+    int n; 
+    int bytes_read;
 
     bzero(buf, BUFSIZE);
-    bzero(response_http_header, 200);
-    bzero(http_version, HTTPVERSIONSIZE);
     bzero(filename, FILENAMESIZE);
     bzero(file_type, FILETYPESIZE);
+    bzero(http_version, HTTPVERSIONSIZE);
     bzero(responseType, 100);
     bzero(http_connection_status, 40);
     bzero(content_length, 100);
+    bzero(response_http_header, 200);
+
+
+    // pthread_t thread_id = pthread_self();
+    // printf("THREAD ID------------: \n%lu\n", thread_id);
 
     // int keepcnt = 4;
     // int keepidle = 3;
@@ -284,56 +288,28 @@ void *handle_connection(void *p_client_socket) {
     // setsockopt(client_socket, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(int));
     // setsockopt(client_socket, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(int));
     
-
     n = recv(client_socket, buf, BUFSIZE, 0);
-
     if (n < 0) error("ERROR in recvfrom\n");
     
-    printf("HTTP REQUEST HEADER Below:\n%s\n", buf);
-    printf("before build http response sprintf open file: filename: %s\n", filename);
-
-
     if(buildHTTPResponseHeader(response_http_header, buf, http_version, filename,  file_type, responseType,  http_connection_status, content_length, client_socket) == -1) {
         n = send(client_socket, response_http_header, strlen(response_http_header), 0);
         return NULL;
-        // return -1;
     }
     
-    //STARTING SENDING FILE DATA
-    int total_bytes_sent_during_one_read; 
-    int bytes_remaining;
-    int bytes_read;
-    
-    fp = fopen(filename, "r");
-  
-    if (fp == NULL) {
-        printf("THERE WAS AN ERROR OPENING THE FILE!\n");
-        return NULL;
-    //   return -1; 
-    } 
-
+    fp = fopen(filename, "r"); //Checking for file existense and readability happens in buildHTTPResponseHeader
     n = send(client_socket, response_http_header, strlen(response_http_header), 0);
+    printf("HTTP REQUEST HEADER Below:\n%s\n", buf);
     printf("This is the RESPONSE header: \n%s\n", response_http_header);    
     bzero(buf, BUFSIZE);
-
-
     
     while (1){
       bytes_read = fread(buf, 1, BUFSIZE, fp);
-
       if (bytes_read < 1) {
-        printf("Bytest read less than 1!!!\n");
         break;
       }
-
-      int length = strlen(buf);
-  
-
       if (sendall(client_socket, buf, BUFSIZE) == -1) {
         error("Error in sending file data");
       }
-
-  
       bzero(buf, BUFSIZE);
     } 
 
@@ -354,13 +330,10 @@ void *handle_connection(void *p_client_socket) {
 }
  
 
-
-
  int main(int argc, char **argv) {
-   int sockfd; 
    int listenfd, connfd;
    int portno; 
-   int clientlen; 
+   int clientlen;
    struct sockaddr_in serveraddr; 
    struct sockaddr_in clientaddr;
    struct hostent *hostp;
@@ -368,124 +341,35 @@ void *handle_connection(void *p_client_socket) {
    int optval;
    int n; 
    char buf[BUFSIZE]; 
-   char filename[FILENAMESIZE];
-   char file_type[FILETYPESIZE];
-   char http_version[HTTPVERSIONSIZE];
-   char responseType[100];
-   FILE *fp; 
-   char http_connection_status[40];
-   char content_length[100];
-   char response_http_header[200];
 
    if (argc != 2) {
      fprintf(stderr, "usage: %s <port>\n", argv[0]);
      exit(1);
    }
-
    portno = atoi(argv[1]);
- 
    listenfd = socket(AF_INET, SOCK_STREAM, 0);
    if (listenfd < 0) error("ERROR opening socket\n");
  
    optval = 1;
    setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, (const void *)&optval , sizeof(int));
- 
+
    bzero((char *) &serveraddr, sizeof(serveraddr));
    serveraddr.sin_family = AF_INET;
    serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);
    serveraddr.sin_port = htons((unsigned short)portno);
- 
+
    if (bind(listenfd, (struct sockaddr *) &serveraddr, sizeof(serveraddr)) < 0) error("ERROR on binding\n");
    listen (listenfd, LISTENQ);
-
-
    clientlen = sizeof(clientaddr);
 
    while (1) {
-    // bzero(buf, BUFSIZE);
-    // bzero(response_http_header, 200);
-    // bzero(http_version, HTTPVERSIONSIZE);
-    // bzero(filename, FILENAMESIZE);
-    // bzero(file_type, FILETYPESIZE);
-    // bzero(responseType, 100);
-    // bzero(http_connection_status, 40);
-    // bzero(content_length, 100);
-
     connfd = accept(listenfd, (struct sockaddr *) &clientaddr, &clientlen );
     printf("\nconnection from %s, port %d\n", inet_ntop(AF_INET, &clientaddr.sin_addr, buf, sizeof(buf)), ntohs(clientaddr.sin_port) );
-    //Thread Should start here!
-//CITATION: https://www.youtube.com/watch?v=Pg_4Jz8ZIH4
+    //CITATION: https://www.youtube.com/watch?v=Pg_4Jz8ZIH4
     pthread_t t;
     int *pclient = malloc(sizeof(int));
     *pclient = connfd;
-
     pthread_create(&t, NULL, handle_connection, pclient);
-    
-    
-    //CODE BEFORE THREADING PUT IN PLACE
-    // n = recv(connfd, buf, BUFSIZE, 0);
-
-    // if (n < 0) error("ERROR in recvfrom\n");
-    
-    // printf("HTTP REQUEST HEADER Below:\n%s\n", buf);
-    // printf("before build http response sprintf open file: filename: %s\n", filename);
-
-
-    // if(buildHTTPResponseHeader(response_http_header, buf, http_version, filename,  file_type, responseType,  http_connection_status, content_length) == -1) {
-    //     n = send(connfd, response_http_header, strlen(response_http_header), 0);
-    //     return -1;
-    // }
-    
-    // //STARTING SENDING FILE DATA
-    // int total_bytes_sent_during_one_read; 
-    // int bytes_remaining;
-    // int bytes_read;
-    
-    // fp = fopen(filename, "r");
-  
-    // if (fp == NULL) {
-    //   printf("THERE WAS AN ERROR OPENING THE FILE!\n");
-    //   return -1; 
-    // } 
-
-    // n = send(connfd, response_http_header, strlen(response_http_header), 0);
-    // printf("This is the RESPONSE header: \n%s\n", response_http_header);    
-    // bzero(buf, BUFSIZE);
-
-
-    
-    // while (1){
-    //   bytes_read = fread(buf, 1, BUFSIZE, fp);
-
-    //   if (bytes_read < 1) {
-    //     printf("Bytest read less than 1!!!\n");
-    //     break;
-    //   }
-
-    //   int length = strlen(buf);
-  
-
-    //   if (sendall(connfd, buf, BUFSIZE) == -1) {
-    //     error("Error in sending file data");
-    //   }
-
-  
-    //   bzero(buf, BUFSIZE);
-    // } 
-
-
-    // close(connfd);
-    // fclose(fp);
-
-    // bzero(buf, BUFSIZE);
-    // bzero(http_version, HTTPVERSIONSIZE);
-    // bzero(filename, FILENAMESIZE);    
-    // bzero(file_type, FILETYPESIZE);    
-    // bzero(responseType,100);    
-    // bzero(http_connection_status, 40);
-    // bzero(content_length, 100);
-
- 
    }
  
    return 0;
